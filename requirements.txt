@@ -1,0 +1,29 @@
+# Core — required to run anything.
+numpy>=2.0
+opencv-python>=4.10
+pyyaml>=6.0
+pydantic>=2.0
+
+# Detection backend. torch/torchvision are large; the `stub` detector used by
+# the demo and the tests needs neither, so a tests-only checkout can skip them.
+torch>=2.4
+torchvision>=0.19
+
+# Live phone-camera server.
+fastapi>=0.110
+uvicorn>=0.30
+websockets>=12.0
+
+# TLS certificate generation for LAN phone access (scripts/make_cert.py).
+cryptography>=42.0
+
+# Tests.
+pytest>=8.0
+httpx>=0.27
+
+# Optional: ONNX Runtime backend. Not required — the default backend is
+# torchvision. See the performance notes in README.md.
+# onnxruntime>=1.18
+
+# Optional: physical core count in benchmark output.
+# psutil>=5.9

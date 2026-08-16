@@ -17,10 +17,14 @@ Everything runs locally. Nothing leaves the machine.
 
 ## Quick start
 
-Requires Python 3.11+. Install dependencies:
+Requires Python 3.11+.
 
 ```bash
-pip install numpy opencv-python torch torchvision fastapi uvicorn pydantic pyyaml
+git clone https://github.com/Jayaragul/visionrag.git
+```
+
+```bash
+pip install -r requirements.txt
 ```
 
 Run the pipeline end-to-end on a generated clip — no model download, no
@@ -70,10 +74,6 @@ The phone is a sensor and a display; all inference happens on your machine.
 **1. Generate a TLS certificate.** `getUserMedia` only works in a secure
 context — `localhost` is exempt, but your phone is not localhost, so a LAN test
 needs HTTPS.
-
-```bash
-pip install cryptography
-```
 
 ```bash
 python scripts/make_cert.py
@@ -283,10 +283,6 @@ tests/              pytest; stub detector, so no network needed
 ```
 
 ## Development
-
-```bash
-pip install pytest httpx
-```
 
 ```bash
 python -m pytest tests/ -q
