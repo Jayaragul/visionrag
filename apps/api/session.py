@@ -18,8 +18,10 @@ import cv2
 import numpy as np
 
 from visionrag.config import Config
+from visionrag.ingest.quality import assess
 from visionrag.ingest.video import Frame
 from visionrag.memory.store import MemoryStore
+from visionrag.memory.world import WorldMemory
 from visionrag.pipeline import IngestPipeline
 from visionrag.types import FrameResult
 
@@ -69,9 +71,16 @@ def _serialise(result: FrameResult, latency_ms: float) -> dict:
 
 
 class LiveSession:
-    def __init__(self, session_id: str, cfg: Config) -> None:
+    def __init__(
+        self,
+        session_id: str,
+        cfg: Config,
+        device: str | None = None,
+        world_db: str | None = None,
+    ) -> None:
         self.id = session_id
         self.cfg = cfg
+        self.device = device
         self.store = MemoryStore(cfg.store.db_path)
         self.pipeline = IngestPipeline(cfg, self.store)
         self.run_id = self.pipeline.begin_session(video_path=f"live:{session_id}")
@@ -80,6 +89,16 @@ class LiveSession:
         self._seq = 0
         self._skipped = 0
         self.closed = False
+
+        # Persistent spatial memory. Opened lazily on the first analysed frame,
+        # because recognising a place needs real pixels.
+        self.world = WorldMemory(world_db) if world_db else None
+        self.current_place_id: int | None = None
+        self.place_label: str | None = None
+        self.place_is_new = False
+        self._visit_open = False
+        self.last_quality: dict | None = None
+        self._rejected_frames = 0
 
     @property
     def elapsed_s(self) -> float:
@@ -115,8 +134,51 @@ class LiveSession:
             if result is None:
                 self._skipped += 1
                 return None
+
+            # Assess only frames that were actually analysed -- the scheduler
+            # skips most, and grading them all would cost more than it informs.
+            quality = assess(img)
+            self.last_quality = quality.as_dict()
+
+            payload = _serialise(result, (time.perf_counter() - t0) * 1000)
+            payload["quality"] = self.last_quality
+
+            if self.world is not None:
+                if quality.usable:
+                    payload["place"] = self._update_world(img, result)
+                else:
+                    # A blurred or near-black frame produces confident-looking
+                    # boxes that are not evidence of anything. Letting them
+                    # into permanent memory is how junk becomes a "fact".
+                    self._rejected_frames += 1
+                    payload["place"] = {
+                        "rejected": True,
+                        "reasons": list(quality.reasons),
+                    }
             self.store.commit()
-        return _serialise(result, (time.perf_counter() - t0) * 1000)
+        return payload
+
+    def _update_world(self, image, result: FrameResult) -> dict:
+        """Recognise the place and record what is visible in it."""
+        if not self._visit_open:
+            match = self.world.begin_visit(image, run_id=self.run_id)
+            self._visit_open = True
+            self.current_place_id = match.place.place_id
+            self.place_label = match.place.label
+            self.place_is_new = match.is_new
+
+        moving = {
+            t.track_id
+            for t in result.tracks
+            if (t.last.v_compensated[0] ** 2 + t.last.v_compensated[1] ** 2) ** 0.5
+            >= self.cfg.events.stop_speed_thresh
+        }
+        self.world.observe_tracks(result.tracks, moving_ids=moving)
+        return {
+            "place_id": self.current_place_id,
+            "label": self.place_label,
+            "is_new": self.place_is_new,
+        }
 
     def stats(self) -> dict:
         s = self.pipeline.stats(self.elapsed_s)
@@ -125,6 +187,10 @@ class LiveSession:
         s["elapsed_s"] = round(self.elapsed_s, 1)
         s["frames_received"] = self._seq
         s["frames_skipped"] = self._skipped
+        s["frames_rejected_quality"] = self._rejected_frames
+        s["device"] = self.device
+        s["place_id"] = self.current_place_id
+        s["quality"] = self.last_quality
         return s
 
     def close(self) -> dict:
@@ -133,6 +199,12 @@ class LiveSession:
                 return {}
             self.closed = True
             summary = self.pipeline.end_session(self.elapsed_s)
+            if self.world is not None:
+                # end_visit is idempotent, so an explicit stop followed by a
+                # socket disconnect cannot double-count absence evidence.
+                summary["visit"] = self.world.end_visit()
+                self.world.close()
+                self.world = None
             self.store.close()
             return summary
 
@@ -150,6 +222,15 @@ class LiveSession:
                     self.pipeline.end_session(self.elapsed_s)
                 except Exception:
                     pass
+            if self.world is not None:
+                # Close the visit before dropping the handle, or the place is
+                # left with an open visit row that never resolves.
+                try:
+                    self.world.end_visit()
+                    self.world.close()
+                except Exception:
+                    pass
+                self.world = None
             evidence_dir = Path(self.cfg.store.evidence_dir)
             if evidence_dir.exists():
                 for f in evidence_dir.glob("*.jpg"):

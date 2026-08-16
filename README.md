@@ -94,6 +94,14 @@ Management*.
 Tap **Start camera**. You should see live boxes, a filling event timeline, and
 a question box.
 
+### Admin dashboard
+
+While the server is running, open **`https://<host>:8443/admin`** on any
+browser — including your laptop. It shows connected devices with their frame
+quality and latency, every place mapped, what is remembered at each one, recent
+events, storage consumed, and enrolled people. Places can be named from here,
+and enrolled people deleted.
+
 The phone previews at its native frame rate locally and uploads only sampled
 JPEG frames. Exactly one frame is in flight at a time — without that
 backpressure the queue grows without bound the moment the server falls behind,
@@ -232,6 +240,49 @@ yields one place.
 0.005 reprojection error while collapsing the whole frame to a single point.
 Mapped-quad area, convexity and reflection are therefore checked explicitly.
 
+### Frame quality
+
+A detector returns confident-looking boxes on a blurred or near-black frame.
+Those scores are not evidence, so every analysed frame is graded on brightness,
+contrast, sharpness (Laplacian variance), clipping and colour cast, and an
+unusable frame is refused before it can write anything to permanent memory.
+
+Measured across simulated lighting changes, the place descriptor is far more
+robust to illumination than expected — a 4x brightness change only drops
+similarity from 1.00 to 0.91, because hue and gradient orientation are already
+largely brightness-invariant. **Viewpoint, not lighting, is the weak axis**: a
+15% pan drops it to 0.73. CLAHE normalisation is available and helps slightly
+(0.909 → 0.932), but it is not the fix it first appeared to be.
+
+*(That test applies a uniform gain and gamma. Real lighting is non-uniform,
+casts shadows and shifts colour temperature, so this understates the
+difficulty.)*
+
+### Face recognition — enrolled people only
+
+**This recognises people you deliberately enroll. It does not identify
+strangers.** No biometric template is stored for anyone who has not been
+enrolled; unknown faces stay `person / unknown` and nothing about them is
+written to disk.
+
+That is a design decision. A face embedding is special-category biometric data
+under the GDPR, India's DPDP Act and Illinois BIPA, and templates of people who
+did not agree are a liability rather than a feature. A small enrolled gallery
+is also far more accurate — matching against six known people is an easy
+problem, matching against everyone is not.
+
+Off by default. To use it, fetch the models explicitly:
+
+```bash
+python scripts/get_face_models.py
+```
+
+Uses OpenCV's built-in YuNet (detection, ~33 ms/frame) and SFace (embedding),
+so there is no new Python dependency. Templates live in their own database file
+so they can be deleted independently, and the dashboard's **forget** button
+erases every template of a person — the only correct response to a withdrawal
+of consent.
+
 ---
 
 ## Where data is stored
@@ -247,6 +298,7 @@ Everything lives under `runs/`:
 | Runs, frames, observations, tracks, events | `runs/**/memory.db` | ~6 MB/hr |
 | Evidence frames | `runs/**/evidence/*.jpg` | ~25 MB/hr |
 | Places, object instances, visit history | `runs/**/world.db` | small |
+| Face templates of enrolled people only | `runs/**/faces.db` | tiny |
 
 Retention is set by `store.retention_mode` in `configs/live.yaml`:
 
@@ -269,7 +321,7 @@ src/visionrag/
   cost.py           per-stage CPU/wall accounting
   config.py         one config object per run, hashed for reproducibility
   pipeline.py       orchestration; shared by file and live ingest
-  ingest/           video, detect, track, egomotion, scheduler
+  ingest/           video, detect, track, egomotion, scheduler, quality, faces
   memory/
     events.py       event induction rules
     store.py        per-run SQLite store
@@ -278,7 +330,9 @@ src/visionrag/
     world.py        cross-visit object instances and change detection
 apps/api/           FastAPI gateway, live session, grounded query
 apps/web/           phone client (no build step, no framework, no CDN)
-scripts/            benchmark, cert generation, world demo
+apps/api/admin.py   dashboard API (read-mostly aggregate views)
+apps/web/admin.*    dashboard page
+scripts/            benchmark, cert generation, face models, world demo
 tests/              pytest; stub detector, so no network needed
 ```
 
@@ -300,9 +354,10 @@ typed events, grounded query with abstention, persistent place recognition,
 object persistence with semantic kinds, observation coverage, occlusion
 handling, object lifecycle, change detection.
 
-**Not done:** `MOVED` as a distinct change type (needs appearance re-identification),
-visit-to-visit diffing, the "Around Me" phone panel, GPS in the client, ONNX
-export.
+**Not done:** `MOVED` as a distinct change type (needs appearance
+re-identification), visit-to-visit diffing, the "Around Me" phone panel, GPS in
+the client, ONNX export. Face recognition is implemented and tested for
+enrollment and matching, but is not yet wired into the live capture loop.
 
 **The main caveat:** every measurement above comes from synthetic scenes.
 Behaviour under real viewpoint and lighting change is **unvalidated**, and the

@@ -42,6 +42,9 @@ def client(tmp_path, monkeypatch):
         return cfg
 
     monkeypatch.setattr(server, "_base_config", fake_config)
+    # Redirect world memory into the temp dir. Without this, running the tests
+    # writes real places and object instances into the repository's runs/.
+    monkeypatch.setattr(server, "_runs_dir", lambda: tmp_path)
     server.SESSIONS.clear()
     with TestClient(server.app) as c:
         yield c

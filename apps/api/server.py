@@ -21,11 +21,14 @@ _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "src"))
 sys.path.insert(0, str(_ROOT / "apps"))
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect  # noqa: E402
+from fastapi import (  # noqa: E402
+    FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect,
+)
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
+from api import admin  # noqa: E402
 from api.query import answer_question  # noqa: E402
 from api.session import LiveSession  # noqa: E402
 from visionrag.config import Config  # noqa: E402
@@ -36,9 +39,28 @@ DEFAULT_CONFIG = _ROOT / "configs" / "live.yaml"
 app = FastAPI(title="visionrag live")
 SESSIONS: dict[str, LiveSession] = {}
 
+# The dashboard reads live state from the same dict rather than importing the
+# session module, which would create a cycle.
+admin.SESSIONS = SESSIONS
+app.include_router(admin.router)
+
 
 def _base_config() -> Config:
     return Config.load(DEFAULT_CONFIG) if DEFAULT_CONFIG.exists() else Config()
+
+
+def _runs_dir() -> Path:
+    """Root for everything a live session writes.
+
+    A function rather than a constant so tests can redirect it; otherwise
+    every test run scatters databases and evidence directories through the
+    repository's runs/ folder.
+    """
+    return _ROOT / "runs" / "live"
+
+
+def _world_db_path() -> str:
+    return str(_runs_dir() / "world.db")
 
 
 def _get(session_id: str) -> LiveSession:
@@ -59,23 +81,42 @@ async def appjs() -> FileResponse:
     return FileResponse(WEB_DIR / "app.js", media_type="application/javascript")
 
 
+@app.get("/admin")
+async def admin_page() -> FileResponse:
+    return FileResponse(WEB_DIR / "admin.html")
+
+
+@app.get("/admin.js")
+async def admin_js() -> FileResponse:
+    return FileResponse(WEB_DIR / "admin.js", media_type="application/javascript")
+
+
 # -- sessions -----------------------------------------------------------
 class CreateSession(BaseModel):
     retention_mode: str = "evidence"
 
 
 @app.post("/api/sessions")
-async def create_session(body: CreateSession | None = None) -> dict:
+async def create_session(
+    request: Request, body: CreateSession | None = None
+) -> dict:
     body = body or CreateSession()
     session_id = uuid.uuid4().hex[:12]
 
     cfg = _base_config()
     cfg.name = f"live-{session_id}"
     cfg.store.retention_mode = body.retention_mode
-    cfg.store.evidence_dir = str(_ROOT / "runs" / "live" / session_id / "evidence")
-    cfg.store.db_path = str(_ROOT / "runs" / "live" / "memory.db")
+    runs = _runs_dir()
+    cfg.store.evidence_dir = str(runs / session_id / "evidence")
+    cfg.store.db_path = str(runs / "memory.db")
 
-    session = await run_in_threadpool(LiveSession, session_id, cfg)
+    # Truncated: enough to tell an iPhone from a laptop in the dashboard,
+    # without storing a full fingerprinting string.
+    device = (request.headers.get("user-agent") or "unknown")[:120]
+    world_db = _world_db_path()
+    session = await run_in_threadpool(
+        LiveSession, session_id, cfg, device, world_db
+    )
     SESSIONS[session_id] = session
     return {
         "session_id": session_id,
@@ -87,6 +128,7 @@ async def create_session(body: CreateSession | None = None) -> dict:
         if cfg.scheduler.mode == "adaptive"
         else cfg.scheduler.fixed_fps,
         "detector": cfg.detector.backend,
+        "world_memory": True,
     }
 
 
