@@ -1,0 +1,72 @@
+# Live phone-camera configuration.
+#
+# Frame rates here are derived from a measured benchmark on the target
+# machine, not guessed. Re-run `python scripts/bench_detector.py` on any new
+# host and update max_fps -- these values are wrong on different hardware.
+#
+# Measured 2026-08-16, Intel 12th-gen mobile (10 physical / 16 logical cores):
+#   ssdlite320_mobilenet_v3_large, torchvision eager backend
+#   186 ms/frame @ 320px / 8 threads  -> 5.4 fps detector-only ceiling
+#   full ingest step ~200 ms          -> ~4.9 fps end-to-end ceiling
+# max_fps is set below that ceiling so the scheduler keeps slack for JPEG
+# decode, network jitter and the OS. A scheduler pinned at its ceiling has
+# nowhere to go when anything else runs, and degrades into unbounded queueing.
+
+name: live
+
+video:
+  # Detection dominates cost and SSDLite resizes to 320 internally, so a
+  # larger frame buys accuracy on small objects at little inference cost --
+  # but it does cost JPEG decode and resize time on every frame.
+  resize_long_edge: 480
+
+detector:
+  backend: torchvision
+  model: ssdlite320_mobilenet_v3_large
+  num_threads: 8
+  score_thresh: 0.40
+  nms_iou: 0.50
+  max_detections: 30
+
+tracker:
+  # At 2-3 fps analysis an object moves a long way between frames, so
+  # association is looser than it would be at 30 fps and tracks are allowed
+  # to survive longer without a match.
+  iou_thresh: 0.25
+  max_misses: 5
+  min_hits: 2
+
+egomotion:
+  # ~8 ms/frame, and the measured payoff is large: on the shake fixture it
+  # removed 12 of 12 false motion events. Leave it on for handheld use.
+  enabled: true
+  max_features: 300
+  static_thresh: 0.002
+  counterfactual_ratio: 0.35
+
+scheduler:
+  mode: adaptive
+  min_fps: 1.0
+  max_fps: 3.0
+  burst_fps: 4.0
+  motion_thresh: 2.5
+  burst_frames: 10
+
+events:
+  near_thresh: 0.15
+  far_thresh: 0.25
+  approach_window_s: 1.5
+  approach_min_delta: 0.04
+  stop_speed_thresh: 0.02
+  stop_min_duration_s: 0.8
+  remained_near_min_s: 2.0
+  min_confidence: 0.30
+
+store:
+  db_path: runs/live/memory.db
+  evidence_dir: runs/live/evidence
+  # metadata = no pixels ever stored (~6 MB/hr)
+  # evidence = JPEG only for frames supporting an event (~30 MB/hr)
+  # full     = every analysed frame (~5 GB/hr; debug only)
+  retention_mode: evidence
+  evidence_jpeg_quality: 80

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "visionrag-live",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["apps/api/server.py", "--host", "127.0.0.1", "--port", "8000"],
+      "port": 8000
+    }
+  ]
+}

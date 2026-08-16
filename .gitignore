@@ -1,0 +1,23 @@
+# Run outputs: databases, evidence frames, benchmark results.
+# Never commit evidence frames -- they are captured camera imagery.
+runs/
+
+# TLS certificates for LAN testing. Self-signed and machine-specific;
+# regenerate with scripts/make_cert.py rather than sharing them.
+certs/
+
+# Models are fetched or exported, not stored in the repo.
+models/
+*.onnx
+*.pth
+*.pt
+
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.env
+
+.DS_Store
+Thumbs.db
