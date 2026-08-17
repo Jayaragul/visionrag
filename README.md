@@ -1,17 +1,34 @@
 # visionrag
 
-**CPU-first spatial memory for a phone camera.** Point a phone at a room; the
-system detects and tracks objects, builds a typed event timeline, learns which
-things are permanent and which are passing through, and answers questions with
-cited evidence — with no GPU, and no VLM in the ingest loop.
+### Your rooms, remembered.
 
-It answers two questions:
+You get back to your desk. Is your laptop still there, or did you leave it in
+the meeting room? Has anything moved since Tuesday? You don't remember — and
+neither does any camera you own. They record everything and understand nothing.
 
-- **What's around me?** — what is here, and which of it is fixtures, furniture,
-  or people.
-- **What's different?** — what changed since the last time I was here.
+**visionrag watches a place, learns what belongs there, and tells you what
+changed.** Point a phone at a room. Come back tomorrow and it says *"the laptop
+is gone, there's a new backpack, everything else is where you left it."*
 
-Everything runs locally. Nothing leaves the machine.
+It runs entirely on an ordinary laptop CPU. No GPU. No cloud. No video ever
+leaves your machine.
+
+---
+
+## What it does
+
+**Knows where it is.** Walk into a room and it recognises the place — no GPS
+required, no markers, no setup. *"Kitchen · 7 visits."*
+
+**Learns what belongs.** The fridge is part of the room. The chair is
+furniture. The cup moves around. The person is a person, no matter how often
+they sit in the same seat.
+
+**Tells you what changed.** Not "47 objects detected" — *"the laptop is gone."*
+And when it hasn't looked properly, it says so instead of guessing.
+
+**Answers questions.** *"Is my laptop still here?"* — with the observations
+that back the answer, or an honest "I don't have evidence for that."
 
 ---
 
@@ -91,8 +108,9 @@ self-signed, and the warning is correct. iOS is stricter than Android and may
 need the certificate trusted under *Settings › General › VPN & Device
 Management*.
 
-Tap **Start camera**. You should see live boxes, a filling event timeline, and
-a question box.
+Tap **Start camera**. The first thing you'll see is the app working out where
+it is. Once it settles, the place gets a name you can edit, and below it: what
+changed since last time, and what's here now.
 
 ### Admin dashboard
 

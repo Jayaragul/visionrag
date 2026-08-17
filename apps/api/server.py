@@ -28,7 +28,7 @@ from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
-from api import admin  # noqa: E402
+from api import admin, phrasing  # noqa: E402
 from api.query import answer_question  # noqa: E402
 from api.session import LiveSession  # noqa: E402
 from visionrag.config import Config  # noqa: E402
@@ -188,6 +188,84 @@ async def query(session_id: str, body: Query) -> dict:
         int(session.elapsed_s * 1000),
         body.min_confidence,
     )
+
+
+@app.get("/api/sessions/{session_id}/place")
+async def place_state(session_id: str) -> dict:
+    """What the system knows about where the camera is right now.
+
+    This is the product's whole point, and until now it existed only in the
+    database and the admin view -- the phone had no way to show it.
+    """
+    session = _get(session_id)
+    if session.world is None or session.current_place_id is None:
+        return {
+            "known": False,
+            # Distinguishes "still working out where you are" from "nothing to
+            # show", which look identical to a user staring at an empty card.
+            "status": "locating",
+        }
+
+    def collect() -> dict:
+        place_id = session.current_place_id
+        snapshot = session.world.snapshot(place_id)
+        changes = session.world.changes(place_id)
+        place = session.world.index.places.get(place_id)
+        n_visits = place.n_visits if place else 1
+
+        here = [
+            {
+                "class": o["class"],
+                "name": phrasing.noun(o["class"]),
+                "kind": phrasing.describe_kind(o["semantic_kind"]),
+                "belief": phrasing.belief(o["persistence"]),
+                "tone": phrasing.belief_tone(o["persistence"]),
+                "persistence": o["persistence"],
+                "times_seen": o["times_seen"],
+                "opportunities": o["opportunities"],
+            }
+            # Tentative instances are things glimpsed once; showing them as
+            # facts about the room would make the list churn every frame.
+            for o in snapshot
+            if o.get("state") != "tentative"
+        ]
+        changed = [
+            {"text": phrasing.describe_change(c, direction), "direction": direction,
+             "class": c["class"]}
+            for direction in ("removed", "added")
+            for c in changes.get(direction, [])
+        ]
+        return {
+            "known": True,
+            "status": "new" if session.place_is_new else "recognised",
+            "place_id": place_id,
+            **phrasing.describe_place(session.place_label, place_id, n_visits),
+            "here": here,
+            "changes": changed,
+            "changes_summary": phrasing.summarise_changes(changes),
+            "first_visit": n_visits <= 1,
+        }
+
+    return await run_in_threadpool(collect)
+
+
+class PlaceLabel(BaseModel):
+    label: str
+
+
+@app.post("/api/sessions/{session_id}/place/label")
+async def name_place(session_id: str, body: PlaceLabel) -> dict:
+    """Naming a place is the one thing only a person can do -- the system can
+    recognise a room but never knows it is 'the kitchen'."""
+    session = _get(session_id)
+    if session.world is None or session.current_place_id is None:
+        raise HTTPException(status_code=409, detail="no place recognised yet")
+    label = body.label.strip()[:64]
+    await run_in_threadpool(
+        session.world.label_place, session.current_place_id, label
+    )
+    session.place_label = label
+    return {"place_id": session.current_place_id, "label": label}
 
 
 @app.get("/api/sessions/{session_id}/stats")
