@@ -50,6 +50,17 @@ class Tracker:
         """Confirmed tracks matched in the most recent update."""
         return [t for t in self._tracks.values() if t.confirmed and t.misses == 0]
 
+    def reset(self) -> None:
+        """Drop all tracks, keeping the id counter monotonic.
+
+        Used when the camera moves to a different place: tracks describe
+        objects in the room they were seen in, and carrying them across a
+        transition would attach one room's objects to another's. Ids are not
+        reused, so stored observations referring to old track ids stay
+        unambiguous.
+        """
+        self._tracks.clear()
+
     def update(
         self,
         detections: list[Detection],

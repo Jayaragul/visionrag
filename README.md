@@ -96,17 +96,31 @@ needs HTTPS.
 python scripts/make_cert.py
 ```
 
-**2. Start the server.**
+**2. Start the server.** `--lan` is required to expose it beyond localhost —
+binding every interface is opt-in, not the default.
 
 ```bash
-python apps/api/server.py --cert certs/dev.pem
+python apps/api/server.py --cert certs/dev.pem --lan
 ```
 
-**3. Open the printed URL on a phone on the same Wi-Fi**, e.g.
-`https://192.168.1.6:8443`. Accept the certificate warning once — it is
-self-signed, and the warning is correct. iOS is stricter than Android and may
-need the certificate trusted under *Settings › General › VPN & Device
-Management*.
+It prints two links containing a generated access token:
+
+```
+  camera     https://192.168.1.6:8443/?t=y2nIBEL6NUI8lKJfG7WQYeFH
+  dashboard  https://192.168.1.6:8443/admin?t=y2nIBEL6NUI8lKJfG7WQYeFH
+```
+
+**3. Open the camera link on a phone on the same Wi-Fi.** Accept the
+certificate warning once — it is self-signed, and the warning is correct. iOS
+is stricter than Android and may need the certificate trusted under
+*Settings › General › VPN & Device Management*.
+
+The token is required for every API call. The page stores it for the tab and
+strips it from the address bar, so it will not end up in a screenshot. TLS
+encrypts the channel but says nothing about who is on the other end; without
+the token, anyone on the same Wi-Fi could read your event log, pull evidence
+frames and delete enrolled people. `--no-auth` exists for localhost work and
+is refused outright alongside `--lan`.
 
 Tap **Start camera**. The first thing you'll see is the app working out where
 it is. Once it settles, the place gets a name you can edit, and below it: what
@@ -114,8 +128,8 @@ changed since last time, and what's here now.
 
 ### Admin dashboard
 
-While the server is running, open **`https://<host>:8443/admin`** on any
-browser — including your laptop. It shows connected devices with their frame
+While the server is running, open the **dashboard link printed at startup**
+on any browser — including your laptop. It shows connected devices with their frame
 quality and latency, every place mapped, what is remembered at each one, recent
 events, storage consumed, and enrolled people. Places can be named from here,
 and enrolled people deleted.
@@ -373,9 +387,20 @@ object persistence with semantic kinds, observation coverage, occlusion
 handling, object lifecycle, change detection.
 
 **Not done:** `MOVED` as a distinct change type (needs appearance
-re-identification), visit-to-visit diffing, the "Around Me" phone panel, GPS in
-the client, ONNX export. Face recognition is implemented and tested for
-enrollment and matching, but is not yet wired into the live capture loop.
+re-identification), visit-to-visit diffing, GPS in the client, ONNX export.
+Face recognition is implemented and tested for enrollment and matching, but is
+not yet wired into the live capture loop.
+
+**Known limits of the access token.** It is a single shared secret, not
+per-user identity: everyone who has the link has full access, including the
+admin API. There is no rotation, no audit log, and no rate limiting. That is
+proportionate for a tool on your own network and is *not* enough to put on the
+public internet.
+
+**Object identity is by class and position, not appearance.** The system knows
+"a laptop was here", not "*your* laptop". Two similar laptops can be conflated,
+and a large viewpoint change can split one object into two instances.
+Re-identification by appearance embedding is the fix and is not built.
 
 **The main caveat:** every measurement above comes from synthetic scenes.
 Behaviour under real viewpoint and lighting change is **unvalidated**, and the

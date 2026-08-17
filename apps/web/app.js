@@ -41,6 +41,34 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
 
 const log = (m) => { $("log").textContent = m || ""; };
 
+/* ---------- access token ----------
+ * The server prints a link containing ?t=<token>. It is stashed in
+ * sessionStorage so a reload or an in-app navigation does not lose access,
+ * and stripped from the address bar so it does not end up in a screenshot or
+ * a shared URL. sessionStorage (not localStorage) means it dies with the tab.
+ */
+const TOKEN = (() => {
+  const fromUrl = new URLSearchParams(location.search).get("t");
+  if (fromUrl) {
+    sessionStorage.setItem("vr_token", fromUrl);
+    history.replaceState(null, "", location.pathname);
+    return fromUrl;
+  }
+  return sessionStorage.getItem("vr_token") || "";
+})();
+
+function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+  return fetch(path, { ...opts, headers });
+}
+
+// A browser cannot set headers on a WebSocket handshake, so the token rides
+// as a query parameter there.
+const wsUrl = (path) =>
+  `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}${path}` +
+  (TOKEN ? `?t=${encodeURIComponent(TOKEN)}` : "");
+
 /* ---------- readable event phrasing ----------
  * Mirrors apps/api/phrasing.py. Duplicated rather than fetched because the
  * timeline updates per frame and a round trip per line would be absurd; the
@@ -107,16 +135,19 @@ async function startCamera() {
   video.style.display = overlay.style.display = "";
   setStatus("live", "Finding this place…", "Comparing what you see with places already known");
 
-  const res = await fetch("/api/sessions", {
+  const res = await api("/api/sessions", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ retention_mode: "evidence" }),
   });
+  if (res.status === 401) {
+    $("start").disabled = false;
+    log("This link is missing its access token. Open the link the server printed.");
+    return;
+  }
   session = await res.json();
   $("deletewrap").style.display = "";
 
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  ws = new WebSocket(
-    `${proto}//${location.host}/api/sessions/${session.session_id}/stream`);
+  ws = new WebSocket(wsUrl(`/api/sessions/${session.session_id}/stream`));
   ws.binaryType = "arraybuffer";
   ws.onopen = () => {
     running = true;
@@ -261,7 +292,7 @@ function setStatus(cls, name, sub) {
 async function refreshPlace() {
   if (!session) return;
   let p;
-  try { p = await (await fetch(`/api/sessions/${session.session_id}/place`)).json(); }
+  try { p = await (await api(`/api/sessions/${session.session_id}/place`)).json(); }
   catch { return; }
 
   if (!p.known) {
@@ -317,7 +348,7 @@ async function namePlace() {
   if (!session) return;
   const label = prompt("What is this place called?\n\ne.g. Kitchen, My desk, Garage");
   if (!label) return;
-  await fetch(`/api/sessions/${session.session_id}/place/label`, {
+  await api(`/api/sessions/${session.session_id}/place/label`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ label }),
   });
@@ -352,7 +383,7 @@ async function ask() {
   if (!session) { log("Start the camera first."); return; }
   $("askbtn").disabled = true;
   try {
-    const a = await (await fetch(`/api/sessions/${session.session_id}/query`, {
+    const a = await (await api(`/api/sessions/${session.session_id}/query`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question }),
     })).json();
@@ -388,7 +419,7 @@ async function stopCamera() {
   document.querySelector(".hint")?.remove();
   $("status").className = "status";
   if (session) {
-    await fetch(`/api/sessions/${session.session_id}/stop`, { method: "POST" });
+    await api(`/api/sessions/${session.session_id}/stop`, { method: "POST" });
     $("placesub").textContent = "Saved. Come back and I'll tell you what changed.";
   }
 }
@@ -399,7 +430,7 @@ async function deleteSession(e) {
   if (!confirm("Delete everything recorded in this session?\nThis cannot be undone."))
     return;
   await stopCamera();
-  await fetch(`/api/sessions/${session.session_id}`, { method: "DELETE" });
+  await api(`/api/sessions/${session.session_id}`, { method: "DELETE" });
   ["changes", "here", "timeline"].forEach((id) => ($(id).innerHTML = ""));
   $("changesec").style.display = $("heresec").style.display = "none";
   $("answer").style.display = "none";

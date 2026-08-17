@@ -9,6 +9,31 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
+
+/* ---------- access token ----------
+ * The server prints a link containing ?t=<token>. It is stashed in
+ * sessionStorage so a reload or an in-app navigation does not lose access,
+ * and stripped from the address bar so it does not end up in a screenshot or
+ * a shared URL. sessionStorage (not localStorage) means it dies with the tab.
+ */
+const TOKEN = (() => {
+  const fromUrl = new URLSearchParams(location.search).get("t");
+  if (fromUrl) {
+    sessionStorage.setItem("vr_token", fromUrl);
+    history.replaceState(null, "", location.pathname);
+    return fromUrl;
+  }
+  return sessionStorage.getItem("vr_token") || "";
+})();
+
+function api(path, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (TOKEN) headers["Authorization"] = "Bearer " + TOKEN;
+  return fetch(path, { ...opts, headers });
+}
+
+
+
 const REFRESH_MS = 4000;
 
 let selectedPlace = null;
@@ -18,7 +43,10 @@ const esc = (s) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 async function get(path) {
-  const res = await fetch(path);
+  const res = await api(path);
+  if (res.status === 401) {
+    throw new Error("not authorised — open the link the server printed");
+  }
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
   return res.json();
 }
@@ -143,7 +171,7 @@ async function renderPlaces() {
       const id = Number(b.dataset.rename);
       const label = prompt("Name this place (e.g. Kitchen, Desk):");
       if (!label) return;
-      await fetch(`/api/admin/places/${id}/label`, {
+      await api(`/api/admin/places/${id}/label`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label }),
@@ -247,7 +275,7 @@ async function renderPeople() {
     b.onclick = async () => {
       const id = Number(b.dataset.forget);
       if (!confirm("Delete this person and every biometric template of them?\nThis cannot be undone.")) return;
-      await fetch(`/api/admin/people/${id}`, { method: "DELETE" });
+      await api(`/api/admin/people/${id}`, { method: "DELETE" });
       renderPeople();
     };
   });

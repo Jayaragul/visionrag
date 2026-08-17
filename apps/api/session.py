@@ -26,6 +26,11 @@ from visionrag.pipeline import IngestPipeline
 from visionrag.types import FrameResult
 
 
+# Sentinel for "no candidate pending". Cannot be None, because None is itself
+# a meaningful candidate: it means "this view matches no known place".
+_NO_PENDING = object()
+
+
 def _serialise(result: FrameResult, latency_ms: float) -> dict:
     """Wire format for the phone (PRD 7.1). Boxes are normalised xywh so the
     client can scale them to whatever size it is rendering at."""
@@ -99,6 +104,13 @@ class LiveSession:
         self._visit_open = False
         self.last_quality: dict | None = None
         self._rejected_frames = 0
+        # How often to re-run place recognition, in analysed frames. At ~3 fps
+        # that is roughly every three seconds: fast enough to catch someone
+        # walking between rooms, cheap enough to be irrelevant to the budget.
+        self.place_check_every = 8
+        self._frames_since_place_check = 0
+        self._pending_place: object = _NO_PENDING
+        self.place_changes = 0
 
     @property
     def elapsed_s(self) -> float:
@@ -119,8 +131,30 @@ class LiveSession:
             if img is None:
                 raise ValueError("could not decode JPEG frame")
 
-            # Live timestamps come from the wall clock, not a frame index:
-            # the client's send rate is variable, and event rules reason in
+            # Quality is judged BEFORE anything is detected or written. The
+            # pipeline persists frames, observations and events inside
+            # process_frame(), so assessing afterwards could not un-write
+            # them -- a blurred frame had already become permanent evidence,
+            # contradicting the product's central promise. Rejecting here also
+            # saves the detector's ~190 ms on a frame that could not support a
+            # conclusion anyway.
+            quality = assess(img)
+            self.last_quality = quality.as_dict()
+            if not quality.usable:
+                self._rejected_frames += 1
+                self._seq += 1
+                return {
+                    "frame_id": self._seq - 1,
+                    "timestamp_ms": int(self.elapsed_s * 1000),
+                    "rejected": True,
+                    "quality": self.last_quality,
+                    "reasons": list(quality.reasons),
+                    "detections": [],
+                    "events": [],
+                }
+
+            # Live timestamps come from the wall clock, not a frame index: the
+            # client's send rate is variable, and event rules reason in
             # seconds. A frame-index clock would make dwell times wrong.
             ts_ms = int(self.elapsed_s * 1000)
             frame = Frame(
@@ -135,37 +169,35 @@ class LiveSession:
                 self._skipped += 1
                 return None
 
-            # Assess only frames that were actually analysed -- the scheduler
-            # skips most, and grading them all would cost more than it informs.
-            quality = assess(img)
-            self.last_quality = quality.as_dict()
-
             payload = _serialise(result, (time.perf_counter() - t0) * 1000)
             payload["quality"] = self.last_quality
-
             if self.world is not None:
-                if quality.usable:
-                    payload["place"] = self._update_world(img, result)
-                else:
-                    # A blurred or near-black frame produces confident-looking
-                    # boxes that are not evidence of anything. Letting them
-                    # into permanent memory is how junk becomes a "fact".
-                    self._rejected_frames += 1
-                    payload["place"] = {
-                        "rejected": True,
-                        "reasons": list(quality.reasons),
-                    }
+                payload["place"] = self._update_world(img, result)
             self.store.commit()
         return payload
 
     def _update_world(self, image, result: FrameResult) -> dict:
-        """Recognise the place and record what is visible in it."""
+        """Recognise the place and record what is visible in it.
+
+        The place is re-checked periodically, not resolved once and trusted
+        forever. A session that matched on its first frame and never looked
+        again filed every later room under the first one -- walk from the
+        kitchen to the bedroom and the bed became a kitchen object.
+
+        A re-check costs a descriptor plus a shortlist match (~5 ms), so it
+        runs every `place_check_every` analysed frames rather than on all.
+        """
         if not self._visit_open:
             match = self.world.begin_visit(image, run_id=self.run_id)
             self._visit_open = True
             self.current_place_id = match.place.place_id
             self.place_label = match.place.label
             self.place_is_new = match.is_new
+        else:
+            self._frames_since_place_check += 1
+            if self._frames_since_place_check >= self.place_check_every:
+                self._frames_since_place_check = 0
+                self._maybe_switch_place(image)
 
         moving = {
             t.track_id
@@ -180,6 +212,47 @@ class LiveSession:
             "is_new": self.place_is_new,
         }
 
+    def _maybe_switch_place(self, image) -> None:
+        """Close the current visit and open a new one if the room changed.
+
+        Two cases count as "moved", and missing the second was the whole bug:
+
+        * the view matches a *different* known place, and
+        * the view matches **nothing** -- which is exactly what walking into a
+          room the system has never seen looks like. Treating no-match as
+          "stay put" meant a brand-new room silently inherited the previous
+          room's identity.
+
+        A switch needs the same verdict on two consecutive checks. One
+        badly-timed frame -- a hand across the lens, an odd angle, a doorway
+        halfway between two rooms -- should not tear a visit in half, and a
+        visit split wrongly costs a spurious round of absence evidence for
+        everything in the room.
+        """
+        match = self.world.index.match(image)
+        candidate = match.place.place_id if match.place is not None else None
+
+        if candidate == self.current_place_id:
+            self._pending_place = _NO_PENDING
+            return
+        if candidate != self._pending_place:
+            self._pending_place = candidate
+            return
+
+        self._pending_place = _NO_PENDING
+        # Closing the old visit is what records absence for it. Skipping that
+        # would leave the previous room with a visit that never resolves and
+        # never contributes evidence that anything was removed.
+        self.world.end_visit()
+        new_match = self.world.begin_visit(image, run_id=self.run_id)
+        self.current_place_id = new_match.place.place_id
+        self.place_label = new_match.place.label
+        self.place_is_new = new_match.is_new
+        self.place_changes += 1
+        # Tracks belong to the room they were seen in. Carrying them over
+        # would attach the kitchen's objects to the bedroom's instances.
+        self.pipeline.tracker.reset()
+
     def stats(self) -> dict:
         s = self.pipeline.stats(self.elapsed_s)
         s["session_id"] = self.id
@@ -191,6 +264,7 @@ class LiveSession:
         s["device"] = self.device
         s["place_id"] = self.current_place_id
         s["quality"] = self.last_quality
+        s["place_changes"] = self.place_changes
         return s
 
     def close(self) -> dict:
@@ -205,7 +279,11 @@ class LiveSession:
                 summary["visit"] = self.world.end_visit()
                 self.world.close()
                 self.world = None
-            self.store.close()
+            # The store stays open. Stopping a session and then asking what it
+            # saw is the obvious next thing to do, and closing here made every
+            # later events/query/evidence call fail. It is closed in delete(),
+            # which is when the data is actually going away.
+            self.store.commit()
             return summary
 
     def delete(self) -> None:

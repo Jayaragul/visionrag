@@ -138,7 +138,15 @@ class FaceEngine:
 
         self.path = Path(db_path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        # check_same_thread=False because FastAPI runs blocking work on an
+        # anyio worker *pool*: the thread that creates a session is not the
+        # thread that later serves a request, and is not even guaranteed to be
+        # the thread that handles the next frame. Serialisation is provided by
+        # the caller's session lock; SQLite itself is serialised-mode safe.
+        # WAL plus a busy timeout keeps concurrent readers from erroring out.
+        self.conn = sqlite3.connect(
+            str(self.path), check_same_thread=False, timeout=30.0
+        )
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(FACE_SCHEMA)

@@ -13,6 +13,7 @@ the heartbeat along with it.
 
 from __future__ import annotations
 
+import secrets
 import sys
 import uuid
 from pathlib import Path
@@ -26,6 +27,7 @@ from fastapi import (  # noqa: E402
 )
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
+from typing import Literal  # noqa: E402
 from starlette.concurrency import run_in_threadpool  # noqa: E402
 
 from api import admin, phrasing  # noqa: E402
@@ -38,6 +40,42 @@ DEFAULT_CONFIG = _ROOT / "configs" / "live.yaml"
 
 app = FastAPI(title="visionrag live")
 SESSIONS: dict[str, LiveSession] = {}
+
+# Shared secret for API access. Set by main() at startup; None disables the
+# check, which is only appropriate for tests and localhost-only runs.
+ACCESS_TOKEN: str | None = None
+
+# Pages carry no data of their own -- they read the token from the URL and
+# then call the API with it. Leaving them open keeps the printed link usable;
+# everything that returns real data sits behind the check.
+PUBLIC_PATHS = frozenset({"/", "/app.js", "/admin", "/admin.js", "/favicon.ico"})
+
+
+def _token_from(request: Request) -> str | None:
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[7:].strip()
+    # Query parameter as well: a browser cannot set headers on a WebSocket
+    # handshake, and the phone is handed a link rather than typing a token.
+    return request.query_params.get("t")
+
+
+@app.middleware("http")
+async def require_token(request: Request, call_next):
+    """Gate every data endpoint behind a shared token.
+
+    A self-signed certificate encrypts the channel; it does not say who is on
+    the other end. Without this, anyone on the same Wi-Fi could read the event
+    log, pull evidence frames, list enrolled people and delete their biometric
+    templates.
+    """
+    if ACCESS_TOKEN and request.url.path not in PUBLIC_PATHS:
+        if _token_from(request) != ACCESS_TOKEN:
+            return JSONResponse(
+                {"detail": "missing or invalid access token"}, status_code=401
+            )
+    return await call_next(request)
+
 
 # The dashboard reads live state from the same dict rather than importing the
 # session module, which would create a cycle.
@@ -93,7 +131,11 @@ async def admin_js() -> FileResponse:
 
 # -- sessions -----------------------------------------------------------
 class CreateSession(BaseModel):
-    retention_mode: str = "evidence"
+    # A closed set, not a free string. Anything unrecognised previously fell
+    # through to the permissive branch in _save_evidence() and stored every
+    # frame -- a typo in a privacy setting silently chose the most invasive
+    # option, which is exactly backwards.
+    retention_mode: Literal["metadata", "evidence", "full"] = "evidence"
 
 
 @app.post("/api/sessions")
@@ -134,6 +176,11 @@ async def create_session(
 
 @app.websocket("/api/sessions/{session_id}/stream")
 async def stream(websocket: WebSocket, session_id: str) -> None:
+    # HTTP middleware does not run for WebSocket handshakes, so the token is
+    # checked again here rather than being quietly skipped.
+    if ACCESS_TOKEN and websocket.query_params.get("t") != ACCESS_TOKEN:
+        await websocket.close(code=4401)
+        return
     session = SESSIONS.get(session_id)
     if session is None:
         await websocket.close(code=4404)
@@ -308,13 +355,36 @@ def main() -> int:
     import uvicorn
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="0.0.0.0")
+    # Localhost by default. Binding every interface without being asked put an
+    # unauthenticated camera, event log and biometric admin API on the local
+    # network as the *default* behaviour.
+    ap.add_argument("--host", default="127.0.0.1",
+                    help="bind address; use --lan to expose on the network")
+    ap.add_argument("--lan", action="store_true",
+                    help="bind 0.0.0.0 so a phone can reach it")
     ap.add_argument("--port", type=int, default=8443)
     ap.add_argument("--cert", help="TLS cert PEM (required for phone camera)")
     ap.add_argument("--key", help="TLS key PEM; defaults to --cert")
+    ap.add_argument("--token", help="access token; generated if omitted")
+    ap.add_argument("--no-auth", action="store_true",
+                    help="disable the access token (localhost only)")
     args = ap.parse_args()
 
-    kwargs: dict = {"host": args.host, "port": args.port}
+    global ACCESS_TOKEN
+    host = "0.0.0.0" if args.lan else args.host
+    exposed = host not in ("127.0.0.1", "localhost")
+
+    if args.no_auth:
+        if exposed:
+            print("refusing --no-auth together with network exposure.")
+            print("Anyone on this network could read your camera log and "
+                  "delete enrolled people.")
+            return 2
+        ACCESS_TOKEN = None
+    else:
+        ACCESS_TOKEN = args.token or secrets.token_urlsafe(18)
+
+    kwargs: dict = {"host": host, "port": args.port}
     if args.cert:
         kwargs["ssl_certfile"] = args.cert
         kwargs["ssl_keyfile"] = args.key or args.cert
@@ -324,11 +394,35 @@ def main() -> int:
         print(
             "WARNING: no --cert given. Phone browsers refuse camera access "
             "over plain http to a LAN address; only localhost will work.\n"
-            "         Generate one with: python scripts/make_cert.py"
+            "         Generate one with: python scripts/make_cert.py\n"
         )
-    print(f"serving on {scheme}://{args.host}:{args.port}")
+
+    shown = "localhost" if not exposed else (_lan_address() or host)
+    suffix = f"?t={ACCESS_TOKEN}" if ACCESS_TOKEN else ""
+    print(f"  camera     {scheme}://{shown}:{args.port}/{suffix}")
+    print(f"  dashboard  {scheme}://{shown}:{args.port}/admin{suffix}")
+    if ACCESS_TOKEN:
+        print("\n  The token in those links is required for every API call.")
+        print("  Open the link as printed; do not share it.")
+    if not exposed:
+        print("\n  Bound to localhost. Add --lan to reach it from a phone.")
+    print()
     uvicorn.run(app, **kwargs)
     return 0
+
+
+def _lan_address() -> str | None:
+    """Best-guess address a phone on the same network would use."""
+    import socket
+
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        addr = s.getsockname()[0]
+        s.close()
+        return addr
+    except Exception:
+        return None
 
 
 if __name__ == "__main__":
