@@ -4,8 +4,13 @@ Answers "is this thing still there?" from a history of detections *and*
 missed detections, rather than assuming permanence from a class label.
 
 Implements the persistence filter of Rosen, Mason & Leonard, "Towards Lifelong
-Feature-Based Mapping in Semi-Static Environments" (ICRA 2016), adapted from
-map landmarks to object instances anchored at topological places.
+Feature-Based Mapping in Semi-Static Environments," IEEE ICRA 2016,
+pp. 1063-1070 -- adapted from map landmarks to object instances anchored at
+topological places.
+
+Written from the model in the paper, not from the authors' reference C++
+implementation, which is GPL-3.0. Vendoring that code would bring the licence
+with it.
 
 Why not just count sightings
 ----------------------------

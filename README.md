@@ -409,10 +409,27 @@ photographs is the gate before further work.
 
 ## References
 
-- Rosen, Mason & Leonard, *Towards Lifelong Feature-Based Mapping in Semi-Static
-  Environments* (ICRA 2016) — the persistence filter
-- Moravec & Elfes, occupancy grids (1985) — unknown is not empty
-- Gálvez-López & Tardós, *Bags of Binary Words* (T-RO 2012) — retrieve-then-verify
-- Hughes, Chang & Carlone, *Hydra* (RSS 2022) — layered spatial world models
+Verified against the published record on 17 August 2026.
 
-*Citations are from memory and should be verified before use in publication.*
+- **D. M. Rosen, J. Mason & J. J. Leonard**, "Towards Lifelong Feature-Based
+  Mapping in Semi-Static Environments," *IEEE ICRA*, Stockholm, May 2016,
+  pp. 1063–1070. — the persistence filter, implemented in
+  [`memory/persistence.py`](src/visionrag/memory/persistence.py)
+- **H. P. Moravec & A. Elfes**, "High Resolution Maps from Wide Angle Sonar,"
+  *IEEE ICRA*, St. Louis, March 1985, pp. 116–121. — occupancy grids, and the
+  distinction between *observed empty* and *unobserved* that the coverage
+  model applies at object level
+- **D. Gálvez-López & J. D. Tardós**, "Bags of Binary Words for Fast Place
+  Recognition in Image Sequences," *IEEE Transactions on Robotics*, vol. 28,
+  no. 5, 2012, pp. 1188–1197. — retrieve-then-verify place recognition
+- **N. Hughes, Y. Chang & L. Carlone**, "Hydra: A Real-time Spatial Perception
+  System for 3D Scene Graph Construction and Optimization," *Robotics: Science
+  and Systems (RSS)*, 2022. [arXiv:2201.13360](https://arxiv.org/abs/2201.13360)
+  — layered spatial world models
+
+**On the persistence filter implementation.** The authors publish a reference
+C++ implementation under **GPL-3.0**. This project does not use it. The filter
+here was written from the model described in the paper — exponential survival
+prior, partition on the interval in which the object died, weight by prior mass
+— so no GPL-licensed code is incorporated. If you later vendor their
+implementation, the licence obligation comes with it.
