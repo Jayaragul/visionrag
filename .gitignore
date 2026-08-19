@@ -24,3 +24,6 @@ Thumbs.db
 
 # A separate repository that lives in this working tree; not part of this project.
 THE_VISSION_author_rewrite/
+
+# Unrelated documents that happen to sit in this working tree.
+*.pdf
